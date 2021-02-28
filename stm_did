@@ -1,0 +1,8 @@
+declare -A stm_did
+# DEV_ID's from RM0090 and RM0091
+stm_did=([0444]="STM32F03x" [0445]="STM32F04x" [0440]="STM32F05x"
+        [0448]="STM32F07x" [0442]="STM32F09x"
+        [0413]="STM32F405xx/07xx or STM32F415xx/17xx"
+        [0419]="STM32F42xxx or STM32F43xxx")
+
+#vim:ft=sh

@@ -1,0 +1,233 @@
+
+declare -A known mnem
+known=([00]="Get" [01]="Get version&protection <GV>" [02]="Get chipID <GID>"
+       [11]="Read memory <RM>" [21]="Go <GO>" [31]="Write memory <WM>" [43]="Erase <ER>"
+       [44]="Extended Erase <EER>" [63]="Write protect <WP>" [73]="Write unprotect <WPUN>"
+       [82]="Readout protect <RDP>" [92]="Readout unprotect <RDU>")
+# Mnemonics as appear in AN3155
+mnem=([GV]="01" [GID]="02" [RM]="11" [GO]="21" [WM]="31" [ER]="43" [EER]="44"
+      [WP]="63" [WPUN]="73" [RDP]="82" [RDP_PRM]="82" [RDU]="92" [RDU_PRM]="92")
+
+xor() {
+  local xor=00
+  if [ ${#1} -le 2 ]
+  then
+    xor=ff
+  fi
+  for ((i=0;i<${#1};i+=2))
+  do
+    xor=$(printf "%02x" $((0x${1:i:2}^0x$xor)))
+  done
+  echo $1$xor
+}
+
+input() {
+  if [ -v ifile ]
+  then
+    if [ $binary -eq 1 ]
+    then
+      exec 4< <(xxd -p -c32 "$ifile")
+    else
+      exec 4<"$ifile"
+    fi
+  else
+    exec 4<&0
+  fi
+  input() {
+    local line len=$1
+	data=
+    while [ $len -gt 0 ]
+    do
+      read line
+      data+=${line:0:len*2}
+      let len-=${#line}/2
+    done
+  } <&4
+  input $1
+}
+
+batons=(\* - \\ \| /)
+batoni=0
+baton() {
+  case $1 in
+	(s) batoni=1; echo -n "${batons[batoni]}";;
+    (n) let 'batoni=batoni<4?batoni+1:1'; echo -ne "\r${batons[batoni]}";;
+	(e) [ $batoni -gt 0 ]&& echo; batoni=0;;
+  esac
+}
+
+# cmd_00 is in main file
+
+# get bl version and protection status
+cmd_01() {
+  local resp
+  send 01fe
+  waitack
+# should be 3, according to AN3155, but my stm32F0 doesn't send the option bytes
+  resp=$(recv 3)
+  echo "BL version: ${resp:0:1}.${resp:1:1}"
+  echo "option bytes: ${resp:2:2} ${resp:4:2}"
+  waitack
+}
+
+# get device ID
+cmd_02() {
+  local n id
+  send 02fd
+  waitack
+  n=$(recv)
+  id=$(recv $((0x$n+1)))
+  source stm_did
+  echo "Device ID: $id$([ -v stm_did[$id] ]&&echo " - ${stm_did[$id]}")"
+  waitack
+}
+
+# read memory
+cmd_11() {
+  local len
+  [ -v address ]||{ echo "Please provide an address (-A)" >&2; exit 1; }
+  [ -v length  ]||{ echo "Please specify a length (-l)"   >&2; exit 1; }
+  while [ $length -gt 0 ]
+  do
+    send 11ee
+    waitack
+    len=$(((length>256?256:length)-1))
+    send $(xor $(printf "%08x" $address))
+    waitack
+    send $(xor $(printf "%02x" $len))
+    waitack
+    recv $((len+1))
+    let length-=len+1
+    let address+=len+1
+  done
+}
+
+# GO (to the indicated vector base address, not entry point!)
+cmd_21() {
+  [ -v address ]||{ echo "Please provide an address (-A)" >&2; exit 1; }
+  send 21de
+  waitack
+  send $(xor $(printf "%08x" $address))
+  waitack
+}
+
+# write memory
+cmd_31() {
+  local len
+  [ -v address ]||{ echo "Please provide an address (-A)" >&2; exit 1; }
+  [ -v length -o -v ilen ]||{ echo "Please specify a length (-l)"   >&2; exit 1; }
+  if [ -v length ]
+  then
+    ilen=$length
+  fi
+  baton s
+  while [ $ilen -gt 0 ]
+  do
+    send 31ce
+    waitack
+    len=$(((ilen>256?256:ilen)-1))
+    send $(xor $(printf "%08x" $address))
+    waitack
+    input $((len+1))
+    send $(xor $(printf "%02x" $len)$data)
+    waitack
+	baton n
+    let ilen-=len+1
+    let address+=len+1
+  done
+  baton e
+}
+
+# erase
+# Global erase is invoked when lenght=255 (actually 256 because lenght is sent as n-1)
+# Do global erase for both 255 (for less clever persons) and 256 (for smart asses)
+# no need to supply pages for global erase, obviously.
+cmd_43() {
+  [ -v length -o -v ilen ]||{ echo "Please specify a length (-l)"   >&2; exit 1; }
+  if [ -v length ]
+  then
+    ilen=$length
+  fi
+  if [ $length -ne 255 -a $length -ne 256 ]
+  then
+    [ $ilen -le 256 ]||{ echo "too many pages specified" >&2; exit 1; }
+  fi
+  send 43bc
+  waitack
+  if [ $length -eq 255 -o $length -eq 256 ]
+  then
+    send ff00
+  else
+    input $ilen
+    send $(xor $(printf "%02x" $((ilen-1)))$data)
+  fi
+  waitack
+}
+
+# extended erase
+# Bank erase is invoked when lenght=0xfffx (smart ass situation not supported)
+# no need to supply pages for bank erase.
+cmd_44() {
+  [ -v length -o -v ilen ]||{ echo "Please specify a length (-l)"   >&2; exit 1; }
+  if [ -v length ]
+  then
+    ilen=$length
+  fi
+  if [ $((length&~0xf)) -ne $((0xfff0)) ]
+  then
+    [ $ilen -le $((0x1ff70)) ]||{ echo "too many pages specified" >&2; exit 1; }
+    [ $((ilen&1)) -eq 0 ]||{ echo "odd length specified, page numbers are 2 bytes" >&2; exit 1; }
+  fi
+  send 44bb
+  waitack
+  if [ $((length&~0xf)) -eq $((0xfff0)) ]
+  then
+    send $(xor $(printf "%04x" $length))
+  else
+    input $ilen
+    send $(xor $(printf "%02x" $((ilen/2-1)))$data)
+  fi
+  waitack
+}
+
+# write protect
+cmd_63() {
+  [ -v length -o -v ilen ]||{ echo "Please specify a length (-l)"   >&2; exit 1; }
+  if [ -v length ]
+  then
+    ilen=$length
+  fi
+  [ $ilen -le 256 ]||{ echo "too many sectors specified" >&2; exit 1; }
+  send 639c
+  waitack
+  input $(ilen)
+  send $(xor $(printf "%02x" $((ilen-1)))$data)
+  waitack
+}
+
+# write unprotect
+cmd_73() {
+  send 738c
+  waitack
+  echo "Unprotect accepted, waiting for storage..."
+  waitack
+}
+
+# readout protect
+cmd_82() {
+  send 827d
+  waitack
+  echo "Protect accepted, waiting for storage..."
+  waitack
+}
+
+# readout unprotect (with erase!)
+cmd_92() {
+  send 926d
+  waitack
+  echo "Unprotect accepted, waiting for erase..."
+  waitack
+}
+
+
+#vim:ft=sh

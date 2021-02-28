@@ -1,0 +1,102 @@
+#!/bin/bash
+# Straight-forward implementation of AN3155
+
+usage() {
+  echo "Usage: $(basename $0) [-aA#l#vib]" >&2
+  exit 1
+}
+
+autobaud=0
+verbose=0
+binary=0
+
+while [ "${1:0:1}" = '-' ]
+do
+  case ${1:1:1} in
+    (a) autobaud=1;;
+    (A) address=$(($2)); shift;;
+    (l) length=$(($2)); shift;;
+    (v) let verbose++;;
+    (i) ifile=$2; shift;;
+    (b) binary=1;;
+    (*) usage;;
+  esac
+  shift
+done
+
+if [ -v ifile ]
+then
+  [ -r "$ifile" ]||{ echo "$ifile: No such file" >&2; exit 1; }
+  if [ $binary -eq 1 ]
+  then
+    ilen=$(stat -Lc "%s" "$ifile")
+  fi
+fi
+
+#open the serial port
+exec 3<>/dev/ttyUSB0 || exit 1
+stty 115200 -echo raw cstopb <&3
+
+recv() {
+local num=$((${1:-1}))
+[ $verbose -lt 2 ]||echo "recv $num" >&2 
+timeout 1 dd iflag=fullblock,count_bytes count=$num 2>/dev/null | xxd -p -c32
+} <&3
+
+send() {
+[ $verbose -lt 2 ]||echo "send $1" >&2
+echo $1 | xxd -r -p
+} >&3
+
+waitack() {
+local ack=$(recv)
+case "$ack" in
+    (79) [ $verbose -eq 0 ]||echo ACK;;
+    (1f) echo NACK;exit 1;;
+    ("") echo no response received; exit 2;;
+    (*) echo strange response $ack received;exit 2;;
+esac
+}
+
+#set -x
+if [ $autobaud -eq 1 ]
+then
+#start with sending 0x7f for autobaud
+send 7f
+waitack
+fi
+
+#try GET
+send 00ff
+waitack
+
+num=$(recv)
+#echo num=$((0x$num))
+get=$(recv $((0x$num+1)))
+#echo get=$get
+declare -A known supp
+source bl_cmds
+[ $verbose -eq 0 ]||echo Bootloader version ${get:0:1}.${get:1:1}
+for c in $(echo ${get:2} | sed 's/../& /g')
+do
+  [ $verbose -eq 0 ]||echo support $c ${known[$c]}
+  supp[$c]=1
+done
+waitack
+
+for c
+do
+# first alias substitution
+  [ -v mnem[$c] ]&&c=${mnem[$c]}
+  if [ -v supp[$c] ]
+  then
+    cmd_$c
+  else
+    if [ -v known[$c] ]
+    then
+      echo "Command $c (${known[$c]}) not supported by target." >&2
+    else
+      echo "Unknown command $c." >&2
+    fi
+  fi
+done
