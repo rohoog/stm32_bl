@@ -16,4 +16,4 @@ The serial port is hardcoded to /dev/ttyUSB0.
 
 # Usage
 
-I have noticed that 'fresh' devices firt must be unprotected both for read (RDU) and write (WPU) before they can be programmed. If they are protected, then the erase (ER or EER) and write (WM) will respond ACK then NACK. Once unprotected, they don't need to be unprotected again.
+I have noticed that 'fresh' devices first must be unprotected both for read (RDU) and write (WPU) before they can be programmed. If they are protected, then the erase (ER or EER) and write (WM) will respond ACK then NACK. Once unprotected, they don't need to be unprotected again.
