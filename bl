@@ -35,7 +35,7 @@ fi
 
 #open the serial port
 exec 3<>/dev/ttyUSB0 || exit 1
-stty 115200 -echo raw cstopb <&3
+stty ${BAUD:-9600} -echo raw cstopb <&3
 
 recv() {
 local num=$((${1:-1}))

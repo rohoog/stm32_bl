@@ -1,0 +1,4 @@
+#!/bin/bash
+./bl -a -v
+./bl -l 0xffff EER
+./bl -A 0x08000000 -b -i $1 WM
